@@ -53,7 +53,7 @@ object MediaExporter {
         "webm" -> "video/webm"
         "mkv" -> "video/x-matroska"
         "m4a" -> "audio/mp4"
-        "log", "txt" -> "text/plain"
+        "txt" -> "text/plain"
         else -> "application/octet-stream"
     }
 

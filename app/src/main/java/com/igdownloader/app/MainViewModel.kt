@@ -234,9 +234,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val username = Utils.extractUsername(u)
         var saved = 0
 
-        titles.forEachIndexed { i, title ->
+        titles.forEachIndexed { i, rawTitle ->
             currentCoroutineContext().ensureActive()
             val idx = i + 1
+            // Instagram titles look like "Video by mommy"; GIFs are named "GIF by mommy"
+            val title = if (fmt == Fmt.GIF) rawTitle.replaceFirst(Regex("^Video\\b"), "GIF") else rawTitle
             val base = if (titles.size > 1) {
                 log("\n--- Processing Media Track $idx of ${titles.size} ---")
                 if (username != null) "$username - ${title}_$idx" else "${title}_$idx"
