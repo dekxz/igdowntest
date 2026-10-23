@@ -11,7 +11,6 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
-import androidx.core.content.FileProvider
 
 class MainActivity : ComponentActivity() {
 
@@ -72,17 +71,16 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun shareLog() {
-        val f = vm.history.file
-        if (!f.exists()) {
-            vm.message.value = MainViewModel.Msg("History log", "No downloads have been logged yet.")
+        val uri = vm.history.uri()
+        if (uri == null) {
+            vm.message.value = MainViewModel.Msg("History log", "No downloads have been logged yet.\nThe log is saved as ${DownloadHistory.NAME} in Downloads/${MediaExporter.FOLDER}.")
             return
         }
-        val uri = FileProvider.getUriForFile(this, "$packageName.fileprovider", f)
         val send = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
             putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        startActivity(Intent.createChooser(send, "instagram_download_history.log"))
+        startActivity(Intent.createChooser(send, DownloadHistory.NAME))
     }
 }

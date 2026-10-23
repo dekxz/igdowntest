@@ -264,12 +264,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     ytdlp(u) {
                         addOption("--playlist-items", idx.toString())
                         addOption("-o", template)
-                        addOption("--format", "best")
+                        // video-only: a GIF can't contain an audio stream
+                        addOption("--format", "bv/b")
                         addOption("--recode-video", "gif")
-                        // Same filter chain as the desktop app's ffmpeg call
+                        // Same filter chain as the desktop app's ffmpeg call (-an drops any audio)
                         addOption(
                             "--postprocessor-args",
-                            "VideoConvertor:-vf fps=15,scale=640:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse -loop 0"
+                            "VideoConvertor:-an -vf fps=15,scale=640:-1:flags=lanczos,split[s0][s1];[s0]palettegen[p];[s1][p]paletteuse -loop 0"
                         )
                     }
                     log("--- GIF Conversion Complete ---")
@@ -279,7 +280,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     ytdlp(u) {
                         addOption("--playlist-items", idx.toString())
                         addOption("-o", template)
-                        addOption("--format", "best")
+                        addOption("--format", "bestaudio/best")
                         addOption("-x")
                         addOption("--audio-format", "mp3")
                         addOption("--audio-quality", "0")
@@ -288,7 +289,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 Fmt.IMAGE -> Unit
             }
-            saved += exportOutputs(work)
+            val finalExt = when (fmt) { Fmt.GIF -> "gif"; Fmt.MP3 -> "mp3"; else -> null }
+            saved += exportOutputs(work, finalExt)
         }
         return saved
     }
@@ -311,16 +313,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Moves finished files from the work dir into Downloads/IGDownloader. */
-    private fun exportOutputs(work: File): Int {
+    private fun exportOutputs(work: File, onlyExt: String? = null): Int {
         var n = 0
         work.listFiles()?.filter { f ->
             f.isFile && listOf("part", "ytdl", "temp").none { f.name.endsWith(".$it") }
         }?.forEach { f ->
-            if (MediaExporter.export(ctx, f)) {
-                log("Saved: ${f.name}")
+            if (onlyExt != null && !f.extension.equals(onlyExt, true)) {
+                log("Skipping leftover file: ${f.name}")
+                f.delete()
+                return@forEach
+            }
+            // Never overwrite: Name, Name_1, Name_2 ...
+            val finalName = MediaExporter.uniqueName(ctx, f.nameWithoutExtension, f.extension)
+            if (MediaExporter.export(ctx, f, finalName)) {
+                log("Saved: $finalName")
                 n++
             } else {
-                log("ERROR: could not save ${f.name}")
+                log("ERROR: could not save $finalName")
             }
             f.delete()
         }
