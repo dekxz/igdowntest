@@ -16,7 +16,11 @@ jobs:
           distribution: temurin
           java-version: 17
 
+      # packages: '' -> only accept licenses; the default 'tools' package no longer exists.
+      # Gradle then downloads platform 36 / build-tools on demand.
       - uses: android-actions/setup-android@v3
+        with:
+          packages: ''
 
       # No Gradle wrapper in the repo, so install Gradle directly (AGP 8.9 needs >= 8.11.1)
       - uses: gradle/actions/setup-gradle@v4
