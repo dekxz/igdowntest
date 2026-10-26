@@ -7,7 +7,7 @@ import android.os.Environment
 import android.provider.MediaStore
 
 /**
- * instagram_download_history.log: ONE file in Downloads/IGDownloader, updated after every download.
+ * instagram_downloader_history.log: ONE file in Downloads/IGDownloader, updated after every download.
  * One "<url>|<format identifier>" line per completed download.
  *
  * Android sometimes renames a freshly created ".log" file to ".log.txt" (or adds " (1)"), so the
@@ -20,8 +20,8 @@ import android.provider.MediaStore
 class DownloadHistory(private val context: Context) {
 
     companion object {
-        const val NAME = "instagram_download_history.log"
-        private const val PREFIX = "instagram_download_history"
+        const val NAME = "instagram_downloader_history.log"
+        private const val PREFIX = "instagram_downloader_history"
     }
 
     private val resolver get() = context.contentResolver
