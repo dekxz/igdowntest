@@ -212,23 +212,36 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             Fmt.IMAGE -> "Image"
         }
 
-        if (history.contains(u, ident)) {
-            show("Already Downloaded", "This URL has already been downloaded with the selected quality/format ($ident).")
-            return
-        }
-
         cancelled = false
         downloading.value = true
         logText.value = ""
-        launchJob { runDownload(u, fmt, ident) }
+        launchJob {
+            // history read happens off the main thread; contains() never throws
+            if (withContext(Dispatchers.IO) { history.contains(u, ident) }) {
+                show("Already Downloaded", "This URL has already been downloaded with the selected quality/format ($ident).")
+                downloading.value = false
+                return@launchJob
+            }
+            runDownload(u, fmt, ident)
+        }
     }
 
     private suspend fun runDownload(u: String, fmt: Fmt, ident: String) {
         val work = File(ctx.cacheDir, "work_${UUID.randomUUID()}").apply { mkdirs() }
         try {
             val count = if (fmt == Fmt.IMAGE) downloadImages(u, work) else downloadMedia(u, fmt, ident, work)
-            history.append(u, ident)
-            show("Success", "All operations finished successfully! ($count file(s) saved to Downloads/${MediaExporter.FOLDER})")
+            // File I/O belongs off the main thread; append() never throws, it reports success as a Boolean.
+            val logged = withContext(Dispatchers.IO) { history.append(u, ident) }
+            if (logged) {
+                log("\n--- Logged to history: $u|$ident ---")
+            } else {
+                log("\n--- WARNING: could not write to the history file (${history.label()}). ---")
+            }
+            show(
+                "Success",
+                "All operations finished successfully! ($count file(s) saved to Downloads/${MediaExporter.FOLDER})" +
+                    if (logged) "" else "\n\nNote: this download could not be added to the history file."
+            )
         } catch (e: CancellationException) {
             onCancelled()
             throw e
@@ -258,6 +271,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
         val username = Utils.extractUsername(u)
         var saved = 0
+        var failedTracks = 0
 
         titles.forEachIndexed { i, rawTitle ->
             currentCoroutineContext().ensureActive()
@@ -317,7 +331,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 Fmt.IMAGE -> Unit
             }
             val finalExt = when (fmt) { Fmt.GIF -> "gif"; Fmt.MP3 -> "mp3"; else -> null }
-            saved += exportOutputs(work, finalExt)
+            val (n, failed) = exportOutputs(work, finalExt)
+            saved += n
+            // a track that produced nothing, or whose file could not be saved, is a failure
+            if (n == 0 || failed > 0) failedTracks++
+        }
+        if (failedTracks > 0) {
+            error(
+                "$failedTracks of ${titles.size} track(s) could not be saved. " +
+                    "This post was NOT added to the history, so you can retry it."
+            )
         }
         return saved
     }
@@ -327,6 +350,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val items = images.fetch(u)
         log("Found ${items.size} image(s)")
         var saved = 0
+        var failedImages = 0
         items.forEachIndexed { i, item ->
             currentCoroutineContext().ensureActive()
             // "<username> - <caption[:50] or shortcode>_<num>.jpg"
@@ -334,14 +358,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val name = Utils.sanitizeFilename("${item.username} - $label", 80) + "_${i + 1}"
             val f = File(work, "$name.jpg")
             images.download(item.url, f)
-            saved += exportOutputs(work)
+            val (n, failed) = exportOutputs(work)
+            saved += n
+            if (n == 0 || failed > 0) failedImages++
+        }
+        if (failedImages > 0) {
+            error(
+                "$failedImages of ${items.size} image(s) could not be saved. " +
+                    "This post was NOT added to the history, so you can retry it."
+            )
         }
         return saved
     }
 
     /** Moves finished files from the work dir into Downloads/IGDownloader. */
-    private fun exportOutputs(work: File, onlyExt: String? = null): Int {
+    private fun exportOutputs(work: File, onlyExt: String? = null): Pair<Int, Int> {
         var n = 0
+        var failed = 0
         work.listFiles()?.filter { f ->
             f.isFile && listOf("part", "ytdl", "temp").none { f.name.endsWith(".$it") }
         }?.forEach { f ->
@@ -357,10 +390,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 n++
             } else {
                 log("ERROR: could not save $finalName")
+                failed++
             }
             f.delete()
         }
-        return n
+        return n to failed
     }
 
     // ---- yt-dlp update (Instagram extractor breaks often) ----

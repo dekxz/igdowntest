@@ -84,16 +84,52 @@ class DownloadHistory(private val context: Context) {
     @Synchronized
     fun contains(url: String, identifier: String): Boolean {
         val entry = "$url|$identifier"
-        return allLogs().any { uri -> readText(uri).lines().any { it.trim() == entry } }
+        return try {
+            allLogs().any { uri -> readText(uri).lines().any { it.trim() == entry } }
+        } catch (_: Exception) {
+            false
+        }
     }
 
-    @Synchronized
-    fun append(url: String, identifier: String) {
-        val pickedFile = picked()
-        if (pickedFile != null) {
-            appendToPicked(pickedFile, "$url|$identifier")
-            return
+    /** Rewrites the whole (small) file. Some providers only accept certain modes, so a few are tried. */
+    private fun write(uri: Uri, text: String): Boolean {
+        val bytes = text.toByteArray(Charsets.UTF_8)
+        for (mode in listOf("wt", "rwt", "w")) {
+            try {
+                if (resolver.openOutputStream(uri, mode)?.use { it.write(bytes) } != null) return true
+            } catch (_: Exception) {}
         }
+        return false
+    }
+
+    /** Appends [addition] to the file without touching what is already in it; falls back to rewriting [fullText]. */
+    private fun appendBytes(uri: Uri, addition: String, fullText: String): Boolean {
+        try {
+            // append mode leaves everything already in the file untouched
+            if (resolver.openOutputStream(uri, "wa")?.use { it.write(addition.toByteArray(Charsets.UTF_8)) } != null) return true
+        } catch (_: Exception) {}
+        // Provider without append support: rewrite the whole file (we already hold its full text).
+        return write(uri, fullText)
+    }
+
+    /**
+     * Adds "<url>|<identifier>" to the history log. Returns true when the entry is in the log afterwards
+     * (including when it was already there) and false when it could not be written, so the caller can tell
+     * the user instead of failing silently. Never throws.
+     */
+    @Synchronized
+    fun append(url: String, identifier: String): Boolean {
+        val entry = "$url|$identifier"
+        return try {
+            appendInternal(entry)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun appendInternal(entry: String): Boolean {
+        val pickedFile = picked()
+        if (pickedFile != null) return appendToPicked(pickedFile, entry)
 
         val logs = defaultLogs()
         val primary = logs.firstOrNull()
@@ -105,32 +141,34 @@ class DownloadHistory(private val context: Context) {
                 put(MediaStore.Downloads.MIME_TYPE, "application/octet-stream")
                 put(MediaStore.Downloads.RELATIVE_PATH, "${Environment.DIRECTORY_DOWNLOADS}/${MediaExporter.FOLDER}")
             }
-            val created = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return
-            resolver.openOutputStream(created)?.use { it.write("$url|$identifier\n".toByteArray(Charsets.UTF_8)) }
-            return
+            val created = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return false
+            return write(created, "$entry\n")
         }
 
-        // Merge extra copies (from older versions) into the first file, then delete them.
+        // If any existing log can't be read, stop: rewriting from a partial read would wipe the old history.
+        val texts = logs.map { readTextOrNull(it) ?: return false }
+        val primaryText = texts.first()
+        val extras = logs.drop(1)
+
+        if (extras.isEmpty()) {
+            if (primaryText.lines().any { it.trim() == entry }) return true
+            val sep = if (primaryText.isNotEmpty() && !primaryText.endsWith("\n")) "\n" else ""
+            return appendBytes(primary, sep + entry + "\n", primaryText + sep + entry + "\n")
+        }
+
+        // Stray copies exist: merge them into the primary log, add the new entry, then delete the copies.
         val lines = LinkedHashSet<String>()
-        readText(primary).lines().map { it.trim() }.filter { it.isNotEmpty() }.forEach { lines += it }
-        for (extra in logs.drop(1)) {
-            readText(extra).lines().map { it.trim() }.filter { it.isNotEmpty() }.forEach { lines += it }
+        for (text in texts) {
+            text.lines().map { it.trim() }.filter { it.isNotEmpty() }.forEach { lines += it }
         }
-        lines += "$url|$identifier"
+        lines += entry
 
-        // "wt" = truncate and rewrite the whole (small) file
-        val ok = try {
-            resolver.openOutputStream(primary, "wt")?.use {
-                it.write((lines.joinToString("\n") + "\n").toByteArray(Charsets.UTF_8))
-            } != null
-        } catch (e: Exception) {
-            false
+        // Never create a new file here: if rewriting fails the copies are kept and nothing is duplicated.
+        if (!write(primary, lines.joinToString("\n") + "\n")) return false
+        for (extra in extras) {
+            try { resolver.delete(extra, null, null) } catch (_: Exception) {}
         }
-        if (ok) {
-            for (extra in logs.drop(1)) {
-                try { resolver.delete(extra, null, null) } catch (_: Exception) {}
-            }
-        }
+        return true
     }
 
     // ---------------------------------------------------------------------------------------
@@ -157,19 +195,11 @@ class DownloadHistory(private val context: Context) {
             ?: "History file: ${NAME} (default, Downloads/${MediaExporter.FOLDER})"
 
     /** Appends one line to a picked file. Existing content is never rewritten unless appending is unsupported. */
-    private fun appendToPicked(pickedFile: Uri, entry: String) {
-        val text = readTextOrNull(pickedFile) ?: return // can't read it -> don't risk damaging it
-        if (text.lines().any { it.trim() == entry }) return
-        val lead = if (text.isNotEmpty() && !text.endsWith("\n")) "\n" else ""
-        val bytes = (lead + entry + "\n").toByteArray(Charsets.UTF_8)
-        try {
-            // append mode leaves everything already in the file untouched
-            if (resolver.openOutputStream(pickedFile, "wa")?.use { it.write(bytes) } != null) return
-        } catch (_: Exception) {}
-        // Provider without append support: rewrite the whole file (we already hold its full text).
-        try {
-            resolver.openOutputStream(pickedFile, "wt")?.use { it.write((text + lead + entry + "\n").toByteArray(Charsets.UTF_8)) }
-        } catch (_: Exception) {}
+    private fun appendToPicked(pickedFile: Uri, entry: String): Boolean {
+        val text = readTextOrNull(pickedFile) ?: return false // can't read it -> don't risk damaging it
+        if (text.lines().any { it.trim() == entry }) return true
+        val sep = if (text.isNotEmpty() && !text.endsWith("\n")) "\n" else ""
+        return appendBytes(pickedFile, sep + entry + "\n", text + sep + entry + "\n")
     }
 
     /**
